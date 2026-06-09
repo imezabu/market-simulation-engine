@@ -2,7 +2,19 @@ import random
 import string
 import numpy as np
 from company import Company, Product
+class FinancialModel:
+    def get_opex(self, company: Company, day):
+        return company.daily_opex
+    def compute_pnl(self, revenue, cogs, opex)->tuple[float, float]:
+        gross_profit = revenue - cogs
+        net_profit = gross_profit - opex
 
+        return gross_profit, net_profit
+    def compute_product_metrics(self, units_sold, price, unit_cost)->tuple[float, float, float]:
+        revenue = units_sold * price
+        cogs = units_sold * unit_cost
+        profit = revenue - cogs
+        return revenue, cogs, profit
 
 class SalesEngine:
     def __init__(
@@ -20,18 +32,23 @@ class SalesEngine:
         product_noise_std: float = 0.08,
         seed: int | None = None
     ):
+
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
-        #initializing
+        
         self.company = company
+        self.financial_model=FinancialModel()
+        # -------------------------
+        # SIM STATE
+        # -------------------------
         self.day=1
         self.long_term_availability = 1.0
+
         #extract daily growth from base yearly growth rate
         self.base_demand = starting_daily_demand
         self.base_daily_growth = (1 + yearly_growth_rate) ** (1 / 365) - 1
 
-        #initialize simulation settings
         self.units_per_production_employee = units_per_production_employee
         self.sales_effectiveness = sales_effectiveness
         self.stockout_penalty_strength = stockout_penalty_strength
@@ -44,28 +61,29 @@ class SalesEngine:
         self.product_noise_std = product_noise_std
 
         
-        #statistics tracking
+        # -------------------------
+        # DATA STORAGE
+        # -------------------------
         self.daily_table = []
         self.product_daily_table = []
 
+        # -------------------------
+        # CUMALATIVE METRICS
+        # ------------------------
         self.cumulative_revenue=0
-        self.cumulative_cost=0
+        self.cumulative_cogs=0
         self.cumulative_opex=0
 
 
-    def _bounded_noise(self, mean: float, std: float, low: float, high: float) -> float:
+    def _bounded_noise(self, mean, std, low, high):
         value = np.random.normal(mean, std)
         return float(np.clip(value, low, high))
 
-    
-    def _calculate_capacity(self) -> int:
-        ##Production Capacity = Workers * production_rate per worker
-        production_workers = self.company.get_production_count()
-        return production_workers * self.units_per_production_employee
+    def _calculate_capacity(self):
+        workers = self.company.get_production_count()
+        return workers * self.units_per_production_employee
 
-    
-    def _calculate_potential_demand(self) -> float:
-        ##Daily Demand = Base Demand with noise to account for fluctuations in market
+    def _calculate_potential_demand(self):
         noise = self._bounded_noise(1.0, self.demand_noise_std, 0.8, 1.2)
         return self.base_demand * noise
 
@@ -109,7 +127,7 @@ class SalesEngine:
     #Product Allocation
     #Takes into consideration price and quality then allocates total sales amongst products using weights
     #----------------------------
-    def _allocate_sales_to_products(self, total_sales: int)->list[tuple[Product, int]]:
+    def _allocate_sales_to_products(self, total_sales: int):
         products = self.company.get_inventory().get_products()
 
         if not products:
@@ -122,53 +140,31 @@ class SalesEngine:
             quality_effect = product.quality
             noise = self._bounded_noise(1.0, self.product_noise_std, 0.8, 1.2)
 
-            weight = price_effect * quality_effect * noise
-            weights.append(weight)
+            weights.append(price_effect * quality_effect * noise)
 
         total_weight = sum(weights)
 
-        ##Normalization
-        # sales_i= total sales * (weight_i/ sum of weights)
-        raw_allocations = [
-            total_sales * (weight / total_weight)
-            for weight in weights
-        ]
+        raw = [total_sales * (w / total_weight) for w in weights]
+        rounded = [int(x) for x in raw]
 
+        remainder = total_sales - sum(rounded)
 
-        rounded_allocations = [int(x) for x in raw_allocations]
+        fractional = [raw[i] - rounded[i] for i in range(len(products))]
+        ranked = sorted(range(len(products)), key=lambda i: fractional[i], reverse=True)
 
-        remainder = total_sales - sum(rounded_allocations)
+        for i in ranked[:remainder]:
+            rounded[i] += 1
 
-        #Allocate remainder of sales to top sold products
-        fractional_parts = [
-            raw_allocations[i] - rounded_allocations[i]
-            for i in range(len(products))
-        ]
-
-        ranked_indices = sorted(
-            range(len(products)),
-            key=lambda i: fractional_parts[i],
-            reverse=True
-        )
-
-        for i in ranked_indices[:remainder]:
-            rounded_allocations[i] += 1
-
-        return [
-            (products[i], rounded_allocations[i])
-            for i in range(len(products))
-        ]
+        return list(zip(products, rounded))
 
     def simulate_day(self) -> tuple[dict, list[dict]]:
         capacity = self._calculate_capacity()
-
-        #noisy base demand for the day
-        potential_demand = self._calculate_potential_demand()
+        demand = self._calculate_potential_demand()
 
         #sales are bounded by production capacity
-        actual_sales = int(min(capacity, potential_demand))
+        actual_sales = int(min(capacity, demand))
 
-        daily_availability = actual_sales / int(round(potential_demand)) if int(round(potential_demand)) > 0 else 1.0
+        daily_availability = actual_sales / int(round(demand)) if int(round(demand)) > 0 else 1.0
 
         #Availability over the long term, aka customer memory
         #low stock on one day is not enough to damage demand significantly
@@ -177,81 +173,86 @@ class SalesEngine:
             + 0.2 * daily_availability
         )
 
-        product_allocations = self._allocate_sales_to_products(actual_sales)
+        allocations = self._allocate_sales_to_products(actual_sales)
 
         growth_rate = self._calculate_growth_rate()
         
 
-        daily_revenue=0
-        daily_cogs=0
-        daily_product_rows=[]
 
-        for product, units_sold in product_allocations:
-            product.log_sales(units_sold)
+        # -------------------------
+        # PRODUCT LAYER
+        # -------------------------
+        revenue = 0
+        cogs = 0
+        product_rows = []
 
-            revenue = units_sold * product.price
-            cogs = units_sold * product.unit_cost
-            profit = revenue - cogs
-            daily_revenue+=revenue
-            daily_cogs+=cogs
+        for product, units in allocations:
+            product.log_sales(units)
 
-            #Primary key (day, product_id)
-            # foreign key (day) references daily_table
-            # foreign key (product_id) referenced product table 
-            daily_product_rows.append({
+            r, c, p = self.financial_model.compute_product_metrics(
+                units, product.price, product.unit_cost
+            )
+
+            revenue += r
+            cogs += c
+
+            product_rows.append({
                 "simulation_day": self.day,
                 "product_id": product.product_id,
                 "product_name": product.name,
-                "units_sold": units_sold,
+                "units_sold": units,
                 "unit_price": product.price,
                 "unit_cost": product.unit_cost,
-                "product_revenue": revenue,
-                "cost_of_goods_sold": cogs,
-                "product_profit": profit
+                "product_revenue": r,
+                "cost_of_goods_sold": c,
+                "product_profit": p
             })
-        #Primary key (Day)
+        # -------------------------
+        # FINANCIAL LAYER
+        # -------------------------
+        opex = self.financial_model.get_opex(self.company, self.day)
 
-        daily_opex=self.company.daily_opex
-        gross_profit=daily_revenue-daily_cogs
-        net_profit=gross_profit-daily_opex
+        gross_profit, net_profit = self.financial_model.compute_pnl(revenue, cogs, opex)
+
+        
 
         daily_row={
             "simulation_day": self.day,
 
             "base_demand": self.base_demand,
-            "potential_demand": potential_demand,
-
+            "potential_demand": demand,
             "capacity": capacity,
             "actual_sales": actual_sales,
 
-            "current_availability": daily_availability,
             "rolling_availability": self.long_term_availability,
-
             "growth_rate": growth_rate,
 
             "sales_team_count": self.company.get_sales_count(),
             "production_team_count": self.company.get_production_count(),
 
-            "total_revenue":daily_revenue,
-            "total_cogs": daily_cogs,
+            "total_revenue":revenue,
+            "total_cogs": cogs,
             "gross_profit": gross_profit,
-            "operating_expenses": daily_opex,
+            "operating_expenses": opex,
             "net_profit": net_profit
 
         }
+        # ---------------------
+        # State Update
+        # ---------------------
         #append tables
         self.daily_table.append(daily_row)
-        
-        self.product_daily_table.extend(daily_product_rows)
+        self.product_daily_table.extend(product_rows)
 
         #update state
-        self.cumulative_cost+=daily_cogs
-        self.cumulative_opex+=daily_opex
-        self.cumulative_revenue+=daily_revenue
+        self.cumulative_cogs+=cogs
+        self.cumulative_opex+=opex
+        self.cumulative_revenue+=revenue
+
         self.base_demand *= 1 + growth_rate
         self.day+=1
 
-        return (daily_row, daily_product_rows)
+        return daily_row, product_rows
 
     def simulate(self, days: int) -> None:
         for day in range(days):
@@ -268,7 +269,7 @@ class SalesEngine:
                 f"Sales: {row['actual_sales']:6} | "
                 f"Capacity: {row['capacity']:6} | "
                 f"Growth: {row['growth_rate']*100:7.3f}% | "
-                f"Availability: {row['current_availability']*100:6.2f}%"
+                f"Availability: {row['rolling_availability']*100:6.2f}%"
             )
     def print_product_summary(self, day: int):
         print(f"\n=== PRODUCT SUMMARY DAY {day} ===\n")
