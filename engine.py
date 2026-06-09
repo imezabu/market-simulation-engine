@@ -23,12 +23,15 @@ class SalesEngine:
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
-
+        #initializing
         self.company = company
-        self.day=0
+        self.day=1
+        self.long_term_availability = 1.0
+        #extract daily growth from base yearly growth rate
         self.base_demand = starting_daily_demand
         self.base_daily_growth = (1 + yearly_growth_rate) ** (1 / 365) - 1
 
+        #initialize simulation settings
         self.units_per_production_employee = units_per_production_employee
         self.sales_effectiveness = sales_effectiveness
         self.stockout_penalty_strength = stockout_penalty_strength
@@ -36,13 +39,18 @@ class SalesEngine:
         self.max_market_demand = max_market_demand
         self.price_sensitivity = price_sensitivity
 
+        #noise randomness settings
         self.demand_noise_std = demand_noise_std
         self.product_noise_std = product_noise_std
 
-        self.long_term_availability = 1.0
-
+        
+        #statistics tracking
         self.daily_table = []
         self.product_daily_table = []
+
+        self.cumulative_revenue=0
+        self.cumulative_cost=0
+        self.cumulative_opex=0
 
 
     def _bounded_noise(self, mean: float, std: float, low: float, high: float) -> float:
@@ -95,7 +103,8 @@ class SalesEngine:
 
         return float(np.clip(growth_rate, -0.05, 0.05))
 
-
+    def _calculate_operating_expenses(self)->float:
+        return self.company.daily_opex
     #----------------------------
     #Product Allocation
     #Takes into consideration price and quality then allocates total sales amongst products using weights
@@ -171,49 +180,77 @@ class SalesEngine:
         product_allocations = self._allocate_sales_to_products(actual_sales)
 
         growth_rate = self._calculate_growth_rate()
-        self.base_demand *= 1 + growth_rate
-        self.day+=1
-        #Primary key (Day)
-        daily_row={
-            "day": self.day,
-            "base_demand": self.base_demand,
-            "potential_demand": potential_demand,
-            "capacity": capacity,
-            "actual_sales": actual_sales,
-            "daily_availability": daily_availability,
-            "long_term_availability": self.long_term_availability,
-            "growth_rate": growth_rate,
-            "sales_team_count": self.company.get_sales_count(),
-            "production_team_count": self.company.get_production_count()
-        }
-        self.daily_table.append(daily_row)
+        
 
+        daily_revenue=0
+        daily_cogs=0
         daily_product_rows=[]
 
         for product, units_sold in product_allocations:
             product.log_sales(units_sold)
 
             revenue = units_sold * product.price
-            total_cost = units_sold * product.unit_cost
-            profit = revenue - total_cost
+            cogs = units_sold * product.unit_cost
+            profit = revenue - cogs
+            daily_revenue+=revenue
+            daily_cogs+=cogs
 
             #Primary key (day, product_id)
             # foreign key (day) references daily_table
             # foreign key (product_id) referenced product table 
             daily_product_rows.append({
-                "day": self.day,
+                "simulation_day": self.day,
                 "product_id": product.product_id,
                 "product_name": product.name,
                 "units_sold": units_sold,
                 "unit_price": product.price,
                 "unit_cost": product.unit_cost,
-                "revenue": revenue,
-                "total_cost": total_cost,
-                "profit": profit
+                "product_revenue": revenue,
+                "cost_of_goods_sold": cogs,
+                "product_profit": profit
             })
+        #Primary key (Day)
+
+        daily_opex=self.company.daily_opex
+        gross_profit=daily_revenue-daily_cogs
+        net_profit=gross_profit-daily_opex
+
+        daily_row={
+            "simulation_day": self.day,
+
+            "base_demand": self.base_demand,
+            "potential_demand": potential_demand,
+
+            "capacity": capacity,
+            "actual_sales": actual_sales,
+
+            "current_availability": daily_availability,
+            "rolling_availability": self.long_term_availability,
+
+            "growth_rate": growth_rate,
+
+            "sales_team_count": self.company.get_sales_count(),
+            "production_team_count": self.company.get_production_count(),
+
+            "total_revenue":daily_revenue,
+            "total_cogs": daily_cogs,
+            "gross_profit": gross_profit,
+            "operating_expenses": daily_opex,
+            "net_profit": net_profit
+
+        }
+        #append tables
+        self.daily_table.append(daily_row)
         
         self.product_daily_table.extend(daily_product_rows)
-        
+
+        #update state
+        self.cumulative_cost+=daily_cogs
+        self.cumulative_opex+=daily_opex
+        self.cumulative_revenue+=daily_revenue
+        self.base_demand *= 1 + growth_rate
+        self.day+=1
+
         return (daily_row, daily_product_rows)
 
     def simulate(self, days: int) -> None:
@@ -225,28 +262,28 @@ class SalesEngine:
 
         for row in self.daily_table[:days]:
             print(
-                f"Day {row['day']:3} | "
+                f"Day {row['simulation_day']:3} | "
                 f"Base Demand: {row['base_demand']:8.0f} | "
                 f"Demand: {row['potential_demand']:8.0f} | "
                 f"Sales: {row['actual_sales']:6} | "
                 f"Capacity: {row['capacity']:6} | "
                 f"Growth: {row['growth_rate']*100:7.3f}% | "
-                f"Availability: {row['daily_availability']*100:6.2f}%"
+                f"Availability: {row['current_availability']*100:6.2f}%"
             )
     def print_product_summary(self, day: int):
         print(f"\n=== PRODUCT SUMMARY DAY {day} ===\n")
 
         rows = [
                 row for row in self.product_daily_table
-                if row["day"] == day
+                if row["simulation_day"] == day
         ]
 
         for row in rows:
             print(
                     f"{row['product_name']:<15} | "
                     f"Units: {row['units_sold']:5} | "
-                    f"Revenue: ${row['revenue']:10.2f} | "
-                    f"Profit: ${row['profit']:10.2f}"
+                    f"Revenue: ${row['product_revenue']:10.2f} | "
+                    f"Profit: ${row['product_profit']:10.2f}"
             )
 
 

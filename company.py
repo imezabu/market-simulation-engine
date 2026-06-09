@@ -72,6 +72,7 @@ class Inventory:
 class Employee:
     salary: float
     employee_id: str
+    active: bool
 
 
 class SalesEmployee(Employee):
@@ -83,10 +84,10 @@ class ProductionEmployee(Employee):
 
 
 class Company:
-    def __init__(self, operating_cost=0):
+    def __init__(self, rent=0):
         self.inventory = Inventory()
         self.employees: list[Employee] = []
-        self.operating_cost=operating_cost
+        self.rent=rent
 
     def _create_unique_id(self) -> str:
         existing_ids = {employee.employee_id for employee in self.employees}
@@ -100,7 +101,8 @@ class Company:
         for _ in range(count):
             employee = SalesEmployee(
                 salary=salary,
-                employee_id=self._create_unique_id()
+                employee_id=self._create_unique_id(),
+                active=True
             )
             self.employees.append(employee)
 
@@ -108,24 +110,32 @@ class Company:
         for _ in range(count):
             employee = ProductionEmployee(
                 salary=salary,
-                employee_id=self._create_unique_id()
+                employee_id=self._create_unique_id(),
+                active=True
             )
             self.employees.append(employee)
+    def fire_employee(self, id: str):
+        for emp in self.employees:
+            if emp.employee_id==id:
+                emp.active=False
+    def updateSalary(self, id: str, new_salary: float):
+        for emp in self.employees:
+            if emp.employee_id==id:
+                emp.salary=new_salary
 
+    def updateRent(self, new_rent: float):
+        self.rent=new_rent
     def get_sales_count(self) -> int:
-        return sum(isinstance(emp, SalesEmployee) for emp in self.employees)
+        return sum(isinstance(emp, SalesEmployee) for emp in self.employees if emp.active)
 
     def get_production_count(self) -> int:
-        return sum(isinstance(emp, ProductionEmployee) for emp in self.employees)
+        return sum(isinstance(emp, ProductionEmployee) for emp in self.employees if emp.active)
 
     def get_inventory(self) -> Inventory:
         return self.inventory
     @property
     def payroll_costs(self) -> float:
-        sum=0
-        for emp in self.employees:
-            sum+=emp.salary
-        return sum
+        return sum(emp.salary for emp in self.employees if emp.active)
     @property
-    def total_yearly_expenses(self)->float:
-        return self.payroll_costs+self.operating_cost
+    def daily_opex(self)->float:
+        return (self.payroll_costs+self.rent)/365
