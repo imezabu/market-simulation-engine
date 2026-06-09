@@ -1,135 +1,7 @@
 import random
 import string
 import numpy as np
-from dataclasses import dataclass, field
-
-
-@dataclass
-class Product:
-    name: str
-    product_id: str
-    price: float
-    material_cost: float
-    labor_cost: float
-    other_cost: float
-    quality: float = 1.0
-    daily_sales: int = 0
-    total_sales: int = 0
-
-    @property
-    def unit_cost(self) -> float:
-        return self.material_cost + self.labor_cost + self.other_cost
-
-    def log_sales(self, count: int) -> None:
-        self.daily_sales = count
-        self.total_sales += count
-
-
-class Inventory:
-    def __init__(self):
-        self.items: list[Product] = []
-
-    def _create_unique_id(self) -> str:
-        existing_ids = {product.product_id for product in self.items}
-
-        while True:
-            new_id = ''.join(random.choices(string.digits, k=9))
-            if new_id not in existing_ids:
-                return new_id
-
-    def add_product(
-        self,
-        name: str,
-        price: float,
-        material_cost: float,
-        labor_cost: float,
-        other_cost: float,
-        quality: float = 1.0
-    ) -> Product:
-        if price < 0:
-            raise ValueError("Price cannot be negative")
-
-        product = Product(
-            name=name,
-            product_id=self._create_unique_id(),
-            price=price,
-            material_cost=material_cost,
-            labor_cost=labor_cost,
-            other_cost=other_cost,
-            quality=quality
-        )
-
-        self.items.append(product)
-        return product
-
-    def get_products(self) -> list[Product]:
-        return self.items
-
-    def get_product_count(self) -> int:
-        return len(self.items)
-
-
-@dataclass
-class Employee:
-    salary: float
-    employee_id: str
-
-
-class SalesEmployee(Employee):
-    pass
-
-
-class ProductionEmployee(Employee):
-    pass
-
-
-class Company:
-    def __init__(self, operating_cost=0):
-        self.inventory = Inventory()
-        self.employees: list[Employee] = []
-        self.operating_cost=operating_cost
-
-    def _create_unique_id(self) -> str:
-        existing_ids = {employee.employee_id for employee in self.employees}
-
-        while True:
-            new_id = ''.join(random.choices(string.digits, k=9))
-            if new_id not in existing_ids:
-                return new_id
-
-    def hire_sales(self, count: int, salary: float) -> None:
-        for _ in range(count):
-            employee = SalesEmployee(
-                salary=salary,
-                employee_id=self._create_unique_id()
-            )
-            self.employees.append(employee)
-
-    def hire_production(self, count: int, salary: float) -> None:
-        for _ in range(count):
-            employee = ProductionEmployee(
-                salary=salary,
-                employee_id=self._create_unique_id()
-            )
-            self.employees.append(employee)
-
-    def get_sales_count(self) -> int:
-        return sum(isinstance(emp, SalesEmployee) for emp in self.employees)
-
-    def get_production_count(self) -> int:
-        return sum(isinstance(emp, ProductionEmployee) for emp in self.employees)
-
-    def get_inventory(self) -> Inventory:
-        return self.inventory
-    @property
-    def payroll_costs(self) -> float:
-        sum=0
-        for emp in self.employees:
-            sum+=emp.salary
-        return sum
-    @property
-    def total_yearly_expenses(self)->float:
-        return self.payroll_costs+self.operating_cost
+from company import Company, Product
 
 
 class SalesEngine:
@@ -153,7 +25,7 @@ class SalesEngine:
             np.random.seed(seed)
 
         self.company = company
-
+        self.day=0
         self.base_demand = starting_daily_demand
         self.base_daily_growth = (1 + yearly_growth_rate) ** (1 / 365) - 1
 
@@ -169,8 +41,8 @@ class SalesEngine:
 
         self.long_term_availability = 1.0
 
-        self.daily_rows = []
-        self.product_daily_rows = []
+        self.daily_table = []
+        self.product_daily_table = []
 
 
     def _bounded_noise(self, mean: float, std: float, low: float, high: float) -> float:
@@ -278,7 +150,7 @@ class SalesEngine:
             for i in range(len(products))
         ]
 
-    def simulate_day(self, day: int) -> None:
+    def simulate_day(self) -> tuple[dict, list[dict]]:
         capacity = self._calculate_capacity()
 
         #noisy base demand for the day
@@ -300,9 +172,10 @@ class SalesEngine:
 
         growth_rate = self._calculate_growth_rate()
         self.base_demand *= 1 + growth_rate
-
-        self.daily_rows.append({
-            "day": day,
+        self.day+=1
+        #Primary key (Day)
+        daily_row={
+            "day": self.day,
             "base_demand": self.base_demand,
             "potential_demand": potential_demand,
             "capacity": capacity,
@@ -312,7 +185,10 @@ class SalesEngine:
             "growth_rate": growth_rate,
             "sales_team_count": self.company.get_sales_count(),
             "production_team_count": self.company.get_production_count()
-        })
+        }
+        self.daily_table.append(daily_row)
+
+        daily_product_rows=[]
 
         for product, units_sold in product_allocations:
             product.log_sales(units_sold)
@@ -321,8 +197,11 @@ class SalesEngine:
             total_cost = units_sold * product.unit_cost
             profit = revenue - total_cost
 
-            self.product_daily_rows.append({
-                "day": day,
+            #Primary key (day, product_id)
+            # foreign key (day) references daily_table
+            # foreign key (product_id) referenced product table 
+            daily_product_rows.append({
+                "day": self.day,
                 "product_id": product.product_id,
                 "product_name": product.name,
                 "units_sold": units_sold,
@@ -332,15 +211,19 @@ class SalesEngine:
                 "total_cost": total_cost,
                 "profit": profit
             })
+        
+        self.product_daily_table.extend(daily_product_rows)
+        
+        return (daily_row, daily_product_rows)
 
     def simulate(self, days: int) -> None:
-        for day in range(1, days + 1):
-            self.simulate_day(day)
+        for day in range(days):
+            self.simulate_day()
     
     def print_daily_summary(self, days: int = 10):
         print("\n=== DAILY SUMMARY ===\n")
 
-        for row in self.daily_rows[:days]:
+        for row in self.daily_table[:days]:
             print(
                 f"Day {row['day']:3} | "
                 f"Base Demand: {row['base_demand']:8.0f} | "
@@ -354,7 +237,7 @@ class SalesEngine:
         print(f"\n=== PRODUCT SUMMARY DAY {day} ===\n")
 
         rows = [
-                row for row in self.product_daily_rows
+                row for row in self.product_daily_table
                 if row["day"] == day
         ]
 
