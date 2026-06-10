@@ -69,46 +69,9 @@ class DatabaseManager:
         ).collect()
 
 
-#SETUP COMPANY
-company = Company()
 
-company.hire_production(count=1000, salary=50_000)
-company.hire_sales(count=150, salary=70_000)
 
-inventory = company.get_inventory()
 
-inventory.add_product("Coca-Cola", price=10, material_cost=1.00, labor_cost=0.50, other_cost=0.25, quality=1.3)
-inventory.add_product("Apple", price=1.5, material_cost=0.60, labor_cost=0.25, other_cost=0.15, quality=1.1)
-inventory.add_product("Generator", price=1000, material_cost=100, labor_cost=1, other_cost=2, quality=2)
-
-#SETUP ENGINE
-engine = SalesEngine(
-    company=company,
-    starting_daily_demand=5000,
-    yearly_growth_rate=0.08,
-    units_per_production_employee=500,
-    max_market_demand=5_000_000,
-    price_sensitivity=1.5,
-    sales_effectiveness=0.003,
-    demand_noise_std=0.03,
-    product_noise_std=0.05,
-    stockout_penalty_strength=1000,
-    seed=42
-)
-
-#SETUP DATABASE
-db=DatabaseManager()
-db.create_session()
-db.wipeTables()
-db.databaseInventoryUpdate(engine)
-try:
-    for day in range(1, 366):
-        daily_row,product_rows=engine.simulate_day()
-        db.databaseWrite(daily_row, product_rows)
-        print(f"Day {day} persisted")
-    
-finally:
-    db.close_session()
 
 
 
