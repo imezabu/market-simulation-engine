@@ -32,7 +32,7 @@ class Inventory:
         existing_ids = {product.product_id for product in self.items}
 
         while True:
-            new_id = ''.join(random.choices(string.digits, k=9))
+            new_id = ''.join(random.choices(string.digits, k=10))
             if new_id not in existing_ids:
                 return new_id
 
@@ -93,7 +93,7 @@ class Company:
         existing_ids = {employee.employee_id for employee in self.employees}
 
         while True:
-            new_id = ''.join(random.choices(string.digits, k=9))
+            new_id = ''.join(random.choices(string.digits, k=10))
             if new_id not in existing_ids:
                 return new_id
 

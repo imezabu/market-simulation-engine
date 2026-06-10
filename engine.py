@@ -1,5 +1,6 @@
 import random
 import string
+import math
 import numpy as np
 from company import Company, Product
 class FinancialModel:
@@ -25,6 +26,7 @@ class SalesEngine:
         units_per_production_employee: int = 50,
         sales_effectiveness: float = 0.001,
         stockout_penalty_strength: float = 0.02,
+        stockout_tolerance: float=0.02,
         saturation_penalty_strength: float = 0.02,
         max_market_demand: float = 100_000,
         price_sensitivity: float = 1.2,
@@ -55,6 +57,7 @@ class SalesEngine:
         self.saturation_penalty_strength = saturation_penalty_strength
         self.max_market_demand = max_market_demand
         self.price_sensitivity = price_sensitivity
+        self.stockout_tolerance=stockout_tolerance
 
         #noise randomness settings
         self.demand_noise_std = demand_noise_std
@@ -74,7 +77,8 @@ class SalesEngine:
         self.cumulative_cogs=0
         self.cumulative_opex=0
 
-
+    def getCompany(self)->Company:
+        return self.company
     def _bounded_noise(self, mean, std, low, high):
         value = np.random.normal(mean, std)
         return float(np.clip(value, low, high))
@@ -101,25 +105,20 @@ class SalesEngine:
 
         #Availability = percentage of demand that can be fulfilled by production, optimal= 1.0
         # Low stock penalty= low stock penalty * (1-availability)
-        stockout_penalty = self.stockout_penalty_strength * (1 - self.long_term_availability)
-
-        #saturation penalty = penalty coefficient * (demand/market max)
-        saturation_penalty = (
-            self.saturation_penalty_strength
-            * (self.base_demand / self.max_market_demand)
-        )
+        
+        stockout_penalty =  1-math.e**(-self.stockout_penalty_strength*((1-self.long_term_availability+self.stockout_tolerance)**4))
 
         random_growth_noise = np.random.normal(0, 0.0005)
-
+        market_penetration=self.base_demand/self.max_market_demand
         growth_rate = (
             self.base_daily_growth
             + sales_boost
-            - stockout_penalty
-            - saturation_penalty
-            + random_growth_noise
+            -stockout_penalty
         )
+        growth_rate*=(1-market_penetration)
+        growth_rate+=random_growth_noise
 
-        return float(np.clip(growth_rate, -0.05, 0.05))
+        return float(growth_rate)
 
     def _calculate_operating_expenses(self)->float:
         return self.company.daily_opex
@@ -163,8 +162,10 @@ class SalesEngine:
 
         #sales are bounded by production capacity
         actual_sales = int(min(capacity, demand))
-
-        daily_availability = actual_sales / int(round(demand)) if int(round(demand)) > 0 else 1.0
+        if (demand<capacity):
+            daily_availability=1.0
+        else:
+            daily_availability = actual_sales / int(round(demand)) if int(round(demand)) > 0 else 1.0
 
         #Availability over the long term, aka customer memory
         #low stock on one day is not enough to damage demand significantly
@@ -200,12 +201,10 @@ class SalesEngine:
                 "simulation_day": self.day,
                 "product_id": product.product_id,
                 "product_name": product.name,
-                "units_sold": units,
-                "unit_price": product.price,
-                "unit_cost": product.unit_cost,
-                "product_revenue": r,
-                "cost_of_goods_sold": c,
-                "product_profit": p
+                "units_sold": int(units),
+                "unit_price": float(product.price),
+                "unit_cost": float(product.unit_cost),
+                "product_profit": float(p)
             })
         # -------------------------
         # FINANCIAL LAYER
@@ -219,22 +218,22 @@ class SalesEngine:
         daily_row={
             "simulation_day": self.day,
 
-            "base_demand": self.base_demand,
-            "potential_demand": demand,
-            "capacity": capacity,
-            "actual_sales": actual_sales,
+            "base_demand": float(self.base_demand),
+            "potential_demand": float(demand),
+            "capacity": int(capacity),
+            "actual_sales": int(actual_sales),
 
-            "rolling_availability": self.long_term_availability,
-            "growth_rate": growth_rate,
+            "rolling_availability": float(self.long_term_availability),
+            "growth_rate": float(growth_rate),
 
-            "sales_team_count": self.company.get_sales_count(),
-            "production_team_count": self.company.get_production_count(),
+            "sales_team_count": int(self.company.get_sales_count()),
+            "production_team_count": int(self.company.get_production_count()),
 
-            "total_revenue":revenue,
-            "total_cogs": cogs,
-            "gross_profit": gross_profit,
-            "operating_expenses": opex,
-            "net_profit": net_profit
+            "total_revenue":float(revenue),
+            "total_cogs": float(cogs),
+            "gross_profit": float(gross_profit),
+            "operating_expenses": float(opex),
+            "net_profit": float(net_profit)
 
         }
         # ---------------------
@@ -254,9 +253,6 @@ class SalesEngine:
 
         return daily_row, product_rows
 
-    def simulate(self, days: int) -> None:
-        for day in range(days):
-            self.simulate_day()
     
     def print_daily_summary(self, days: int = 10):
         print("\n=== DAILY SUMMARY ===\n")
@@ -283,7 +279,6 @@ class SalesEngine:
             print(
                     f"{row['product_name']:<15} | "
                     f"Units: {row['units_sold']:5} | "
-                    f"Revenue: ${row['product_revenue']:10.2f} | "
                     f"Profit: ${row['product_profit']:10.2f}"
             )
 
@@ -291,27 +286,5 @@ class SalesEngine:
 # -------------------------
 # Testing
 # -------------------------
+#
 
-company = Company()
-
-company.hire_production(count=100, salary=50_000)
-company.hire_sales(count=3000, salary=70_000)
-
-inventory = company.get_inventory()
-
-inventory.add_product("Coca-Cola", price=10, material_cost=1.00, labor_cost=0.50, other_cost=0.25, quality=1.3)
-inventory.add_product("Apple", price=1.5, material_cost=0.60, labor_cost=0.25, other_cost=0.15, quality=1.1)
-inventory.add_product("Generator", price=1000, material_cost=100, labor_cost=1, other_cost=2, quality=1.8)
-
-engine = SalesEngine(
-    company=company,
-    starting_daily_demand=1000,
-    yearly_growth_rate=0.20,
-    units_per_production_employee=50,
-    seed=42
-)
-
-engine.simulate(365)
-
-engine.print_daily_summary(365)
-engine.print_product_summary(365)
